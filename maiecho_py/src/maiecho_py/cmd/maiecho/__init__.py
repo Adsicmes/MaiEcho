@@ -1,0 +1,1 @@
+"""MaiEcho server command."""
