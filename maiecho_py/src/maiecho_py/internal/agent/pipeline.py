@@ -4,13 +4,33 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
 
+from pydantic import BaseModel, Field
 from maiecho_py.internal.config.models import PromptConfig
 from maiecho_py.internal.config.prompts import render_prompt
 from maiecho_py.internal.llm.client import LLMClient
 from maiecho_py.internal.model import AnalysisResult, Chart, Song
 from maiecho_py.internal.storage import StorageRepository
+
+
+class CleanedComments(BaseModel):
+    comments: list[str] = Field(default_factory=list)
+
+
+class AnalystOutput(BaseModel):
+    difficulty_tags: list[str] = Field(default_factory=list)
+    key_patterns: list[str] = Field(default_factory=list)
+    pros: list[str] = Field(default_factory=list)
+    cons: list[str] = Field(default_factory=list)
+    sentiment: str = "Neutral"
+    version_analysis: str = ""
+    reasoning: str = ""
+
+
+class AdvisorOutput(BaseModel):
+    summary: str = ""
+    rating_advice: str = ""
+    difficulty_analysis: str = ""
 
 
 @dataclass(slots=True)
@@ -119,37 +139,35 @@ class AnalysisPipeline:
     async def _run_song_analysis(
         self, song: Song, comments: list[str]
     ) -> AnalysisResult:
-        analyst_outputs: list[dict[str, Any]] = []
+        analyst_outputs: list[AnalystOutput] = []
         reasoning_logs: list[str] = []
 
         for start in range(0, len(comments), self._chunk_size):
             end = min(start + self._chunk_size, len(comments))
             chunk = comments[start:end]
-            analyst_json, reasoning = await self._run_analyst(song, chunk, None)
-            analyst_outputs.append(analyst_json)
-            if reasoning:
+            analyst_output = await self._run_analyst(song, chunk, None)
+            analyst_outputs.append(analyst_output)
+            if analyst_output.reasoning:
                 reasoning_logs.append(
-                    f"--- Chunk {start}-{end} Analysis ---\n{reasoning}"
+                    f"--- Chunk {start}-{end} Analysis ---\n{analyst_output.reasoning}"
                 )
 
         if not analyst_outputs:
             raise ValueError("所有分析块均失败")
 
         merged_analyst = self._merge_analyst_outputs(analyst_outputs)
-        advisor_json = await self._run_advisor(song, merged_analyst)
+        advisor_output = await self._run_advisor(song, merged_analyst)
         return AnalysisResult(
             target_type="song",
             target_id=song.id,
-            summary=self._optional_str(advisor_json.get("summary")),
-            rating_advice=self._optional_str(advisor_json.get("rating_advice")),
-            difficulty_analysis=self._optional_str(
-                advisor_json.get("difficulty_analysis")
-            ),
+            summary=self._optional_str(advisor_output.summary),
+            rating_advice=self._optional_str(advisor_output.rating_advice),
+            difficulty_analysis=self._optional_str(advisor_output.difficulty_analysis),
             reasoning_log="\n\n".join(reasoning_logs) or None,
             payload_json=json.dumps(
                 {
-                    "analyst": merged_analyst,
-                    "advisor": advisor_json,
+                    "analyst": merged_analyst.model_dump(),
+                    "advisor": advisor_output.model_dump(),
                     "chunk_count": len(analyst_outputs),
                 },
                 ensure_ascii=False,
@@ -159,25 +177,27 @@ class AnalysisPipeline:
     async def _run_chart_analysis(
         self, song: Song, comments: list[str], chart: Chart
     ) -> AnalysisResult:
-        analyst_json, reasoning = await self._run_analyst(song, comments, chart)
-        advisor_json = await self._run_advisor(song, analyst_json)
+        analyst_output = await self._run_analyst(song, comments, chart)
+        advisor_output = await self._run_advisor(song, analyst_output)
         return AnalysisResult(
             target_type="song",
             target_id=song.id,
-            summary=self._optional_str(advisor_json.get("summary")),
-            rating_advice=self._optional_str(advisor_json.get("rating_advice")),
-            difficulty_analysis=self._optional_str(
-                advisor_json.get("difficulty_analysis")
-            ),
-            reasoning_log=reasoning or None,
+            summary=self._optional_str(advisor_output.summary),
+            rating_advice=self._optional_str(advisor_output.rating_advice),
+            difficulty_analysis=self._optional_str(advisor_output.difficulty_analysis),
+            reasoning_log=analyst_output.reasoning or None,
             payload_json=json.dumps(
-                {"analyst": analyst_json, "advisor": advisor_json}, ensure_ascii=False
+                {
+                    "analyst": analyst_output.model_dump(),
+                    "advisor": advisor_output.model_dump(),
+                },
+                ensure_ascii=False,
             ),
         )
 
     async def _run_analyst(
         self, song: Song, comments: list[str], chart: Chart | None
-    ) -> tuple[dict[str, Any], str]:
+    ) -> AnalystOutput:
         aliases = ", ".join(alias.alias for alias in song.aliases)
         chart_info = self._format_chart_info(
             [chart] if chart is not None else song.charts
@@ -193,14 +213,15 @@ class AnalysisPipeline:
             self.prompts.agent.analyst.user,
             {"Comments": "\n".join(f"- {comment}" for comment in comments)},
         )
-        analyst_content, reasoning = await self.llm.chat_with_reasoning(
-            analyst_system, analyst_user
+        return await self.llm.structured(
+            analyst_system,
+            analyst_user,
+            AnalystOutput,
         )
-        return self._load_json(analyst_content), reasoning
 
     async def _run_advisor(
-        self, song: Song, analyst_json: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, song: Song, analyst_output: AnalystOutput
+    ) -> AdvisorOutput:
         aliases = ", ".join(alias.alias for alias in song.aliases)
         advisor_system = render_prompt(
             self.prompts.agent.advisor.system,
@@ -208,10 +229,13 @@ class AnalysisPipeline:
         )
         advisor_user = render_prompt(
             self.prompts.agent.advisor.user,
-            {"AnalysisData": json.dumps(analyst_json, ensure_ascii=False)},
+            {
+                "AnalysisData": json.dumps(
+                    analyst_output.model_dump(), ensure_ascii=False
+                )
+            },
         )
-        advisor_content = await self.llm.chat(advisor_system, advisor_user)
-        return self._load_json(advisor_content)
+        return await self.llm.structured(advisor_system, advisor_user, AdvisorOutput)
 
     def _clean_comments(self, comments: list[str]) -> list[str]:
         cleaned: list[str] = []
@@ -248,12 +272,11 @@ class AnalysisPipeline:
             },
         )
         try:
-            response = await self.llm.chat(system_prompt, user_prompt)
-            normalized = response.strip().removeprefix("```json").removeprefix("```")
-            normalized = normalized.removesuffix("```").strip()
-            parsed = json.loads(normalized)
-            if isinstance(parsed, list):
-                return [str(item) for item in parsed if str(item).strip()]
+            response = await self.llm.structured(
+                system_prompt, user_prompt, CleanedComments
+            )
+            if response.comments:
+                return [item for item in response.comments if item.strip()]
         except Exception:
             return cleaned
         return cleaned
@@ -372,56 +395,37 @@ class AnalysisPipeline:
         return f"{self.prompts.agent.knowledge.guide_header}{chr(10).join(matched)}"
 
     @staticmethod
-    def _merge_analyst_outputs(outputs: list[dict[str, Any]]) -> dict[str, Any]:
-        merged: dict[str, Any] = {
-            "difficulty_tags": [],
-            "key_patterns": [],
-            "pros": [],
-            "cons": [],
-            "sentiment": "Neutral",
-            "version_analysis": "",
-        }
+    def _merge_analyst_outputs(outputs: list[AnalystOutput]) -> AnalystOutput:
+        merged = AnalystOutput()
         for key in ["difficulty_tags", "key_patterns", "pros", "cons"]:
             seen: set[str] = set()
             values: list[str] = []
             for output in outputs:
-                raw = output.get(key, [])
-                if not isinstance(raw, list):
-                    continue
+                raw = getattr(output, key)
                 for item in raw:
                     item_str = str(item)
                     if item_str in seen:
                         continue
                     seen.add(item_str)
                     values.append(item_str)
-            merged[key] = values
+            setattr(merged, key, values)
 
         sentiment_counts = {"Positive": 0, "Neutral": 0, "Negative": 0}
         for output in outputs:
-            sentiment = output.get("sentiment")
-            if isinstance(sentiment, str) and sentiment in sentiment_counts:
+            sentiment = output.sentiment
+            if sentiment in sentiment_counts:
                 sentiment_counts[sentiment] += 1
-        merged["sentiment"] = max(
+        merged.sentiment = max(
             sentiment_counts.items(), key=lambda item: (item[1], item[0] != "Neutral")
         )[0]
 
         version_analyses = [
-            str(output.get("version_analysis"))
+            str(output.version_analysis)
             for output in outputs
-            if output.get("version_analysis")
+            if output.version_analysis
         ]
-        merged["version_analysis"] = "\n".join(version_analyses)
+        merged.version_analysis = "\n".join(version_analyses)
         return merged
-
-    @staticmethod
-    def _load_json(content: str) -> dict[str, object]:
-        normalized = content.strip()
-        normalized = normalized.removeprefix("```json").removeprefix("```")
-        normalized = normalized.removesuffix("```").strip()
-        parsed = json.loads(normalized)
-        if not isinstance(parsed, dict):
-            raise ValueError("LLM 返回的 JSON 不是对象")
-        return parsed
 
     @staticmethod
     def _optional_str(value: object) -> str | None:

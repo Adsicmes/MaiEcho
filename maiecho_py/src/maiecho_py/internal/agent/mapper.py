@@ -5,11 +5,17 @@ import re
 from collections.abc import Sequence
 from typing import NamedTuple
 
+from pydantic import BaseModel
 from maiecho_py.internal.config.models import PromptConfig
 from maiecho_py.internal.config.prompts import render_prompt
 from maiecho_py.internal.llm.client import LLMClient
 from maiecho_py.internal.model import Song
 from maiecho_py.internal.storage import StorageRepository
+
+
+class MatchDecision(BaseModel):
+    decision: str
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -128,8 +134,8 @@ class CommentMapper:
             self.prompts.agent.mapper.verify_match.user,
             {"Keyword": keyword, "SourceTitle": source_title, "Content": content},
         )
-        response = await self.llm.chat(system_prompt, user_prompt)
-        return "YES" in response.strip().upper()
+        response = await self.llm.structured(system_prompt, user_prompt, MatchDecision)
+        return response.decision.upper() == "YES"
 
 
 class SongCandidate(NamedTuple):

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
+from pydantic import BaseModel
 from maiecho_py.internal.config.models import PromptConfig
 from maiecho_py.internal.config.prompts import render_prompt
 from maiecho_py.internal.llm.client import LLMClient
+
+
+class BinaryDecision(BaseModel):
+    decision: Literal["YES", "NO"]
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -40,9 +47,8 @@ class RelevanceAnalyzer:
             self.prompts.agent.relevance.check_alias.user,
             {"Title": title, "Artist": artist or "", "Alias": alias},
         )
-        response = await self.llm.chat(system_prompt, user_prompt)
-        normalized = response.strip().upper()
-        return "YES" in normalized or "适合" in response
+        response = await self.llm.structured(system_prompt, user_prompt, BinaryDecision)
+        return response.decision == "YES"
 
     async def check_title_relevance(
         self, title: str, artist: str | None, aliases: list[str], video_title: str
@@ -57,6 +63,5 @@ class RelevanceAnalyzer:
                 "VideoTitle": video_title,
             },
         )
-        response = await self.llm.chat(system_prompt, user_prompt)
-        normalized = response.strip().upper()
-        return "YES" in normalized or "相关" in response
+        response = await self.llm.structured(system_prompt, user_prompt, BinaryDecision)
+        return response.decision == "YES"
