@@ -6,6 +6,7 @@ from typing import cast
 from dataclasses import dataclass
 
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 import maiecho_py.app as app_module
 import maiecho_py.internal.storage as storage
@@ -69,22 +70,33 @@ class FakeLLM:
     async def close(self) -> None:
         return None
 
-    async def chat(self, system_prompt: str, user_prompt: str) -> str:
+    async def structured(
+        self, system_prompt: str, user_prompt: str, model: type[BaseModel]
+    ) -> BaseModel:
         if "严格的音游评论数据清洗员" in system_prompt:
             cleaned = []
             for line in user_prompt.splitlines():
                 if ". " in line:
                     cleaned.append(line.split(". ", 1)[1])
-            return str(cleaned).replace("'", '"')
+            return model.model_validate({"comments": cleaned})
         if "舞萌（maimai）顾问" in system_prompt or "舞萌(maimai)顾问" in system_prompt:
-            return '{"summary":"advisor summary","rating_advice":"advisor advice","difficulty_analysis":"advisor difficulty"}'
-        return '{"difficulty_tags":["诈称"],"key_patterns":["纵连"],"pros":["手感好"],"cons":["尾杀"],"sentiment":"Positive"}'
-
-    async def chat_with_reasoning(
-        self, system_prompt: str, user_prompt: str
-    ) -> tuple[str, str]:
-        content = await self.chat(system_prompt, user_prompt)
-        return content, "reasoning"
+            return model.model_validate(
+                {
+                    "summary": "advisor summary",
+                    "rating_advice": "advisor advice",
+                    "difficulty_analysis": "advisor difficulty",
+                }
+            )
+        return model.model_validate(
+            {
+                "difficulty_tags": ["诈称"],
+                "key_patterns": ["纵连"],
+                "pros": ["手感好"],
+                "cons": ["尾杀"],
+                "sentiment": "Positive",
+                "reasoning": "reasoning",
+            }
+        )
 
 
 @dataclass(slots=True)
@@ -357,28 +369,49 @@ def test_analysis_post_uses_map_reduce_for_song_level(tmp_path: Path) -> None:
         async def close(self) -> None:
             return None
 
-        async def chat(self, system_prompt: str, user_prompt: str) -> str:
+        async def structured(
+            self, system_prompt: str, user_prompt: str, model: type[BaseModel]
+        ) -> BaseModel:
             if "严格的音游评论数据清洗员" in system_prompt:
                 cleaned = []
                 for line in user_prompt.splitlines():
                     if ". " in line:
                         cleaned.append(line.split(". ", 1)[1])
-                return str(cleaned).replace("'", '"')
+                return model.model_validate({"comments": cleaned})
             if (
                 "舞萌（maimai）顾问" in system_prompt
                 or "舞萌(maimai)顾问" in system_prompt
             ):
-                return '{"summary":"advisor summary","rating_advice":"advisor advice","difficulty_analysis":"advisor difficulty"}'
+                return model.model_validate(
+                    {
+                        "summary": "advisor summary",
+                        "rating_advice": "advisor advice",
+                        "difficulty_analysis": "advisor difficulty",
+                    }
+                )
             if "评论 54" in user_prompt:
-                return '{"difficulty_tags":["诈称"],"key_patterns":["尾杀"],"pros":["手感好"],"cons":["后半难"],"sentiment":"Negative","version_analysis":"chunk-2"}'
-            return '{"difficulty_tags":["越级"],"key_patterns":["纵连"],"pros":["配置明确"],"cons":["前半难"],"sentiment":"Positive","version_analysis":"chunk-1"}'
-
-        async def chat_with_reasoning(
-            self, system_prompt: str, user_prompt: str
-        ) -> tuple[str, str]:
-            if "评论 54" in user_prompt:
-                return await self.chat(system_prompt, user_prompt), "reasoning-2"
-            return await self.chat(system_prompt, user_prompt), "reasoning-1"
+                return model.model_validate(
+                    {
+                        "difficulty_tags": ["诈称"],
+                        "key_patterns": ["尾杀"],
+                        "pros": ["手感好"],
+                        "cons": ["后半难"],
+                        "sentiment": "Negative",
+                        "version_analysis": "chunk-2",
+                        "reasoning": "reasoning-2",
+                    }
+                )
+            return model.model_validate(
+                {
+                    "difficulty_tags": ["越级"],
+                    "key_patterns": ["纵连"],
+                    "pros": ["配置明确"],
+                    "cons": ["前半难"],
+                    "sentiment": "Positive",
+                    "version_analysis": "chunk-1",
+                    "reasoning": "reasoning-1",
+                }
+            )
 
     database = build_database(str(tmp_path / "analysis-map-reduce.db"))
     repository = storage.StorageRepository(database)
@@ -527,26 +560,49 @@ def test_analysis_merge_prefers_majority_sentiment(tmp_path: Path) -> None:
         async def close(self) -> None:
             return None
 
-        async def chat(self, system_prompt: str, user_prompt: str) -> str:
+        async def structured(
+            self, system_prompt: str, user_prompt: str, model: type[BaseModel]
+        ) -> BaseModel:
             if "严格的音游评论数据清洗员" in system_prompt:
                 cleaned = []
                 for line in user_prompt.splitlines():
                     if ". " in line:
                         cleaned.append(line.split(". ", 1)[1])
-                return str(cleaned).replace("'", '"')
+                return model.model_validate({"comments": cleaned})
             if (
                 "舞萌（maimai）顾问" in system_prompt
                 or "舞萌(maimai)顾问" in system_prompt
             ):
-                return '{"summary":"advisor summary","rating_advice":"advisor advice","difficulty_analysis":"advisor difficulty"}'
+                return model.model_validate(
+                    {
+                        "summary": "advisor summary",
+                        "rating_advice": "advisor advice",
+                        "difficulty_analysis": "advisor difficulty",
+                    }
+                )
             if "评论 54" in user_prompt:
-                return '{"difficulty_tags":["诈称"],"key_patterns":["尾杀"],"pros":[],"cons":["后半难"],"sentiment":"Negative","version_analysis":"chunk-2"}'
-            return '{"difficulty_tags":["越级"],"key_patterns":["纵连"],"pros":["配置明确"],"cons":[],"sentiment":"Positive","version_analysis":"chunk-1"}'
-
-        async def chat_with_reasoning(
-            self, system_prompt: str, user_prompt: str
-        ) -> tuple[str, str]:
-            return await self.chat(system_prompt, user_prompt), "reasoning"
+                return model.model_validate(
+                    {
+                        "difficulty_tags": ["诈称"],
+                        "key_patterns": ["尾杀"],
+                        "pros": [],
+                        "cons": ["后半难"],
+                        "sentiment": "Negative",
+                        "version_analysis": "chunk-2",
+                        "reasoning": "reasoning",
+                    }
+                )
+            return model.model_validate(
+                {
+                    "difficulty_tags": ["越级"],
+                    "key_patterns": ["纵连"],
+                    "pros": ["配置明确"],
+                    "cons": [],
+                    "sentiment": "Positive",
+                    "version_analysis": "chunk-1",
+                    "reasoning": "reasoning",
+                }
+            )
 
     database = build_database(str(tmp_path / "analysis-sentiment.db"))
     repository = storage.StorageRepository(database)

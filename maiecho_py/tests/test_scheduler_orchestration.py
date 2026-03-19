@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import maiecho_py.internal.storage as storage
+from pydantic import BaseModel
 from maiecho_py.internal.agent.mapper import CommentMapper
 from maiecho_py.internal.collector.base import Collector
 from maiecho_py.internal.config.loader import load_prompt_config
@@ -57,23 +58,35 @@ class FakeLLM:
     async def close(self) -> None:
         return None
 
-    async def chat(self, system_prompt: str, user_prompt: str) -> str:
+    async def structured(
+        self, system_prompt: str, user_prompt: str, model: type[BaseModel]
+    ) -> BaseModel:
         if "是否指的是特定歌曲" in system_prompt:
-            return "YES"
+            return model.model_validate({"decision": "YES", "reason": "matched"})
         if "严格的音游评论数据清洗员" in system_prompt:
             cleaned = []
             for line in user_prompt.splitlines():
                 if ". " in line:
                     cleaned.append(line.split(". ", 1)[1])
-            return str(cleaned).replace("'", '"')
+            return model.model_validate({"comments": cleaned})
         if "舞萌（maimai）顾问" in system_prompt or "舞萌(maimai)顾问" in system_prompt:
-            return '{"summary":"advisor summary","rating_advice":"advisor advice","difficulty_analysis":"advisor difficulty"}'
-        return '{"difficulty_tags":["诈称"],"key_patterns":["纵连"],"pros":["手感好"],"cons":["尾杀"],"sentiment":"Positive"}'
-
-    async def chat_with_reasoning(
-        self, system_prompt: str, user_prompt: str
-    ) -> tuple[str, str]:
-        return await self.chat(system_prompt, user_prompt), "reasoning"
+            return model.model_validate(
+                {
+                    "summary": "advisor summary",
+                    "rating_advice": "advisor advice",
+                    "difficulty_analysis": "advisor difficulty",
+                }
+            )
+        return model.model_validate(
+            {
+                "difficulty_tags": ["诈称"],
+                "key_patterns": ["纵连"],
+                "pros": ["手感好"],
+                "cons": ["尾杀"],
+                "sentiment": "Positive",
+                "reasoning": "reasoning",
+            }
+        )
 
 
 def test_scheduler_periodically_runs_discovery_mapper_and_analysis(

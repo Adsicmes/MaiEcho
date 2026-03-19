@@ -4,6 +4,7 @@ from pathlib import Path
 
 import asyncio
 import httpx
+from pydantic import BaseModel
 from sqlalchemy import select
 
 import maiecho_py.internal.storage as storage
@@ -18,10 +19,12 @@ from typing import cast
 
 
 class FakeLLM:
-    async def chat(self, system_prompt: str, user_prompt: str) -> str:
+    async def structured(
+        self, system_prompt: str, user_prompt: str, model: type[BaseModel]
+    ) -> BaseModel:
         _ = system_prompt
         _ = user_prompt
-        return "YES"
+        return model.model_validate({"decision": "YES", "reason": "matched"})
 
 
 def test_comment_mapper_links_unmapped_comments_to_song(tmp_path: Path) -> None:
